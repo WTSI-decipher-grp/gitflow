@@ -179,6 +179,8 @@ cmd_start() {
 	echo "- You are now on branch '$BRANCH'"
 	echo
 	echo "Follow-up actions:"
+	echo "- Create a sqitch tag now: sq tag $VERSION"
+	echo "- Create an sql release branch now: sq git flow release start $VERSION"
 	echo "- Bump the version number now!"
 	echo "- Start committing last-minute fixes in preparing your release"
 	echo "- When done, run:"
@@ -314,6 +316,7 @@ cmd_finish() {
 		echo "- '$DEVELOP_BRANCH', '$MASTER_BRANCH' and tags have been pushed to '$ORIGIN'"
 		echo "- Release branch '$BRANCH' in '$ORIGIN' has been deleted."
 	fi
+  echo "- Finish the sql release branch now: sq git flow release finish -p $VERSION"
 	echo
 }
 
@@ -341,6 +344,7 @@ cmd_publish() {
 	echo "- A new remote branch '$BRANCH' was created"
 	echo "- The local branch '$BRANCH' was configured to track the remote branch"
 	echo "- You are now on branch '$BRANCH'"
+  echo "- Publish the sql release branch now: sq git flow release publish $VERSION"
 	echo
 }
 
