@@ -47,7 +47,7 @@ init() {
 usage() {
 	echo "usage: git flow hotfix [list] [-v]"
 	echo "       git flow hotfix start [-F] <version> [<base>]"
-	echo "       git flow hotfix finish [-Fsumpk] <version>"
+	echo "       git flow hotfix finish [-FsumpkS] <version>"
 	echo "       git flow hotfix publish <version>"
 	echo "       git flow hotfix track <version>"
 }
@@ -73,6 +73,7 @@ cmd_list() {
                 warn ""
 		exit 0
 	fi
+
 	current_branch=$(git branch --no-color | grep '^\* ' | grep -v 'no branch' | sed 's/^* //g')
 	short_names=$(echo "$hotfix_branches" | sed "s ^$PREFIX  g")
 
@@ -141,7 +142,7 @@ require_version_arg() {
 }
 
 require_base_is_on_master() {
-	if ! git branch --no-color --contains "$BASE" 2>/dev/null \
+	if ! git_do branch --no-color --contains "$BASE" 2>/dev/null \
 			| sed 's/[* ] //g' \
 	  		| grep -q "^$MASTER_BRANCH\$"; then
 		die "fatal: Given base '$BASE' is not a valid commit on '$MASTER_BRANCH'."
@@ -192,62 +193,17 @@ cmd_start() {
 	echo
 }
 
-cmd_publish() {
-	parse_args "$@"
-	require_version_arg
-
-	# sanity checks
-	require_clean_working_tree
-	require_branch "$BRANCH"
-	git_do fetch -q "$ORIGIN"
-	require_branch_absent "$ORIGIN/$BRANCH"
-
-	# create remote branch
-	git_do push "$ORIGIN" "$BRANCH:refs/heads/$BRANCH"
-	git_do fetch -q "$ORIGIN"
-
-	# configure remote tracking
-	git config "branch.$BRANCH.remote" "$ORIGIN"
-	git config "branch.$BRANCH.merge" "refs/heads/$BRANCH"
-	git_do checkout "$BRANCH"
-
-	echo
-	echo "Summary of actions:"
-	echo "- A new remote branch '$BRANCH' was created"
-	echo "- The local branch '$BRANCH' was configured to track the remote branch"
-	echo "- You are now on branch '$BRANCH'"
-	echo
-}
-
-cmd_track() {
-	parse_args "$@"
-	require_version_arg
-
-	# sanity checks
-	require_clean_working_tree
-	require_branch_absent "$BRANCH"
-	git_do fetch -q "$ORIGIN"
-	require_branch "$ORIGIN/$BRANCH"
-
-	# create tracking branch
-	git_do checkout -b "$BRANCH" "$ORIGIN/$BRANCH"
-
-	echo
-	echo "Summary of actions:"
-	echo "- A new remote tracking branch '$BRANCH' was created"
-	echo "- You are now on branch '$BRANCH'"
-	echo
-}
-
 cmd_finish() {
 	DEFINE_boolean fetch false "fetch from $ORIGIN before performing finish" F
 	DEFINE_boolean sign false "sign the release tag cryptographically" s
 	DEFINE_string signingkey "" "use the given GPG-key for the digital signature (implies -s)" u
 	DEFINE_string message "" "use the given tag message" m
-	DEFINE_string messagefile "" "use the contents of the given file as tag message" f
+	DEFINE_string messagefile "" "use the contents of the given file as a tag message" f
 	DEFINE_boolean push false "push to $ORIGIN after performing finish" p
 	DEFINE_boolean keep false "keep branch after performing finish" k
 	DEFINE_boolean notag false "don't tag this release" n
+	DEFINE_boolean squash false "squash release during merge" S
+
 	parse_args "$@"
 	require_version_arg
 
@@ -278,9 +234,15 @@ cmd_finish() {
 	if ! git_is_branch_merged_into "$BRANCH" "$MASTER_BRANCH"; then
 		git_do checkout "$MASTER_BRANCH" || \
 		  die "Could not check out $MASTER_BRANCH."
-		git_do merge --no-ff "$BRANCH" || \
-		  die "There were merge conflicts."
-		  # TODO: What do we do now?
+		if noflag squash; then
+			git_do merge --no-ff "$BRANCH" || \
+				die "There were merge conflicts."
+				# TODO: What do we do now?
+		else
+			git_do merge --squash "$BRANCH" || \
+				die "There were merge conflicts."
+			git_do commit
+		fi
 	fi
 
 	if noflag notag; then
@@ -294,7 +256,7 @@ cmd_finish() {
 			[ "$FLAGS_signingkey" != "" ] && opts="$opts -u '$FLAGS_signingkey'"
 			[ "$FLAGS_message" != "" ] && opts="$opts -m '$FLAGS_message'"
 			[ "$FLAGS_messagefile" != "" ] && opts="$opts -F '$FLAGS_messagefile'"
-			eval git_do tag $opts "$VERSION_PREFIX$VERSION" "$MASTER_BRANCH" || \
+			eval git_do tag $opts "$tagname" "$MASTER_BRANCH" || \
 			die "Tagging failed. Please run finish again to retry."
 		fi
 	fi
@@ -308,13 +270,23 @@ cmd_finish() {
 
 		# TODO: Actually, accounting for 'git describe' pays, so we should
 		# ideally git merge --no-ff $tagname here, instead!
-		git_do merge --no-ff "$BRANCH" || \
-		  die "There were merge conflicts."
-		  # TODO: What do we do now?
+		if noflag squash; then
+			git_do merge --no-ff "$BRANCH" || \
+				die "There were merge conflicts."
+				# TODO: What do we do now?
+		else
+			git_do merge --squash "$BRANCH" || \
+				die "There were merge conflicts."
+				# TODO: What do we do now?
+			git_do commit
+		fi
 	fi
 
 	# delete branch
 	if noflag keep; then
+		if [ "$BRANCH" = "$(git_current_branch)" ]; then
+			git_do checkout "$MASTER_BRANCH"
+		fi
 		git_do branch -d "$BRANCH"
 	fi
 
@@ -325,8 +297,10 @@ cmd_finish() {
 			die "Could not push to $MASTER_BRANCH from $ORIGIN."
 		if noflag notag; then
 			git_do push --tags "$ORIGIN" || \
-				die "Could not push tags to $ORIGIN."
+			  die "Could not push tags to $ORIGIN."
 		fi
+		git_do push "$ORIGIN" :"$BRANCH" || \
+			die "Could not delete the remote $BRANCH in $ORIGIN."
 	fi
 
 	echo
@@ -334,9 +308,9 @@ cmd_finish() {
 	echo "- Latest objects have been fetched from '$ORIGIN'"
 	echo "- Hotfix branch '$BRANCH' has been merged into '$MASTER_BRANCH'"
 	if noflag notag; then
-		echo "- The hotfix was tagged '$VERSION_PREFIX$VERSION'"
+		echo "- The hotfix was tagged '$tagname'"
 	fi
-	echo "- Hotfix branch '$BRANCH' has been back-merged into '$DEVELOP_BRANCH'"
+	echo "- Hotfix branch '$BRANCH' has been merged into '$DEVELOP_BRANCH'"
 	if flag keep; then
 		echo "- Hotfix branch '$BRANCH' is still available"
 	else
@@ -344,6 +318,54 @@ cmd_finish() {
 	fi
 	if flag push; then
 		echo "- '$DEVELOP_BRANCH', '$MASTER_BRANCH' and tags have been pushed to '$ORIGIN'"
+		echo "- Hotfix branch '$BRANCH' in '$ORIGIN' has been deleted."
 	fi
+	echo
+}
+
+cmd_publish() {
+	parse_args "$@"
+	require_version_arg
+
+	# sanity checks
+	require_clean_working_tree
+	require_branch "$BRANCH"
+	git_do fetch -q "$ORIGIN"
+	require_branch_absent "$ORIGIN/$BRANCH"
+
+	# create remote branch
+	git_do push "$ORIGIN" "$BRANCH:refs/heads/$BRANCH"
+	git_do fetch -q "$ORIGIN"
+
+	# configure remote tracking
+	git_do config "branch.$BRANCH.remote" "$ORIGIN"
+	git_do config "branch.$BRANCH.merge" "refs/heads/$BRANCH"
+	git_do checkout "$BRANCH"
+
+	echo
+	echo "Summary of actions:"
+	echo "- A new remote branch '$BRANCH' was created"
+	echo "- The local branch '$BRANCH' was configured to track the remote branch"
+	echo "- You are now on branch '$BRANCH'"
+	echo
+}
+
+cmd_track() {
+	parse_args "$@"
+	require_version_arg
+
+	# sanity checks
+	require_clean_working_tree
+	require_branch_absent "$BRANCH"
+	git_do fetch -q "$ORIGIN"
+	require_branch "$ORIGIN/$BRANCH"
+
+	# create tracking branch
+	git_do checkout -b "$BRANCH" "$ORIGIN/$BRANCH"
+
+	echo
+	echo "Summary of actions:"
+	echo "- A new remote tracking branch '$BRANCH' was created"
+	echo "- You are now on branch '$BRANCH'"
 	echo
 }
