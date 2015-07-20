@@ -280,10 +280,12 @@ cmd_finish() {
 
   # delete branch
   if noflag keep; then
-    if [ "$BRANCH" = "$(git_current_branch)" ]; then
-      git_do checkout "$MASTER_BRANCH"
+    if git_remote_branch_exists "$BRANCH"; then
+      if [ "$BRANCH" = "$(git_current_branch)" ]; then
+        git_do checkout "$MASTER_BRANCH"
+      fi
+      git_do branch -d "$BRANCH"
     fi
-    git_do branch -d "$BRANCH"
   fi
 
   if flag push; then
